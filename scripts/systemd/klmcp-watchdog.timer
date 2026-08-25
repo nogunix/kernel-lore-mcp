@@ -1,0 +1,13 @@
+[Unit]
+Description=kernel-lore-mcp: run the silent-failure watchdog
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+# The freshness budget is 900s; checking less often than that would let
+# a frozen corpus sit unnoticed for longer than the budget it enforces.
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=kernel-lore-mcp: detect silent sync/index failures
+Documentation=https://github.com/nogunix/kernel-lore-mcp
+After=klmcp.service
+
+[Service]
+Type=oneshot
+# Never race the writer: a sync mid-flight makes generation and bm25
+# doc counts read inconsistently.
+ExecCondition=/bin/sh -c 'case "$(/usr/bin/systemctl --user show klmcp-sync.service -p ActiveState --value)" in active|activating|deactivating) exit 1 ;; *) exit 0 ;; esac'
+WorkingDirectory=%h
+Environment=KLMCP_DATA_DIR=/mnt/hdd/klmcp-data
+Environment=KLMCP_STATUS_URL=http://127.0.0.1:8099/status
+ExecStart=%h/.local/bin/klmcp-watchdog
