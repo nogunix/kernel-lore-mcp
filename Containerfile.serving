@@ -1,0 +1,32 @@
+# Containerfile.serving — local build of the MCP serving image.
+#
+# The production image (klmcp:0.4.5) was KIWI-built and its final stage
+# runs `pip install kernel-lore-mcp==${KLMCP_VERSION}` straight from
+# PyPI — i.e. mjbommar/kernel-lore-mcp upstream, not this fork. That
+# left /status reporting 0.4.5 while the writer-side CLI (built from
+# this checkout via scripts/klmcp-install-local.sh) reported 0.4.6.
+#
+# This installs a wheel built from the checkout instead of a PyPI
+# release, so serving and writer track the same source. Build:
+#   uv build --wheel
+#   podman build -f Containerfile.serving -t localhost/klmcp:0.4.6 .
+FROM registry.fedoraproject.org/fedora-minimal:44
+
+RUN microdnf install -y --setopt=install_weak_deps=0 python3 python3-pip \
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf
+
+COPY dist/kernel_lore_mcp-0.4.6-cp312-abi3-linux_x86_64.whl /tmp/
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir /tmp/kernel_lore_mcp-0.4.6-cp312-abi3-linux_x86_64.whl \
+    && rm /tmp/kernel_lore_mcp-0.4.6-cp312-abi3-linux_x86_64.whl
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    KLMCP_DATA_DIR=/data \
+    PYTHONUNBUFFERED=1 \
+    FASTMCP_CHECK_FOR_UPDATES=off \
+    FASTMCP_SHOW_SERVER_BANNER=false
+
+VOLUME ["/data"]
+ENTRYPOINT ["kernel-lore-mcp"]
+CMD ["--transport", "stdio"]
