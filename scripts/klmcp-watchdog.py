@@ -40,6 +40,8 @@ STATE_FILE = STATE_DIR / "last.json"
 # 25% is far above organic growth and far below the failure signature.
 BM25_GROWTH_FAIL_PCT = 25.0
 GENERATION_STALL_WARN_SECONDS = 3600
+# Long enough for the next 5-minute sync tick to land after a reindex.
+REINDEX_GRACE_SECONDS = 900
 
 fails: list[str] = []
 warns: list[str] = []
@@ -96,18 +98,57 @@ def bm25_live_docs() -> int | None:
     return live
 
 
+def reindex_quiet_window() -> bool:
+    """True while a reindex legitimately suppresses ingest.
+
+    klmcp-sync.service carries an ExecCondition that skips the tick
+    whenever klmcp-reindex.service holds the writer, so last_ingest ages
+    for the whole reindex — 27 minutes on this corpus, well past the
+    freshness budget. Reporting that as a frozen corpus is the false
+    positive this function exists to suppress; the grace period covers
+    the tail, where the reindex has finished but the next sync tick has
+    not landed yet.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "show", "klmcp-reindex.service",
+             "-p", "ActiveState", "-p", "InactiveEnterTimestampMonotonic"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    props = dict(
+        line.split("=", 1) for line in out.splitlines() if "=" in line
+    )
+    if props.get("ActiveState") in ("active", "activating", "reloading", "deactivating"):
+        return True
+
+    try:
+        ended_us = int(props.get("InactiveEnterTimestampMonotonic", "0"))
+        uptime_us = float(Path("/proc/uptime").read_text().split()[0]) * 1_000_000
+    except (ValueError, OSError, IndexError):
+        return False
+    if ended_us <= 0:
+        return False
+    return (uptime_us - ended_us) < REINDEX_GRACE_SECONDS * 1_000_000
+
+
 def check_freshness(status: dict) -> None:
     age = status.get("last_ingest_age_seconds")
     interval = status.get("configured_interval_seconds") or 300
     budget = max(3 * interval, 900)
-    if not status.get("freshness_ok", False):
-        fail(f"/status reports freshness_ok=false (last ingest {age}s ago)")
-    elif age is None:
+    stale = (not status.get("freshness_ok", False)) or (
+        age is not None and age > budget
+    )
+    if age is None:
         fail("/status has no last_ingest_age_seconds")
-    elif age > budget:
-        fail(f"last ingest {age}s ago, over the {budget}s budget — corpus may be frozen")
-    else:
+    elif not stale:
         ok(f"freshness {age}s (budget {budget}s)")
+    elif reindex_quiet_window():
+        warn(f"last ingest {age}s ago, but a reindex is holding the writer")
+    else:
+        fail(f"last ingest {age}s ago, over the {budget}s budget — corpus may be frozen")
 
 
 def check_generation(status: dict, state: dict) -> int | None:
